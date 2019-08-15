@@ -203,7 +203,7 @@ Block {
 		this.noteStart =  (startAngle /2pi) * 4;
 		this.noteSustain = (1/divisions) * 4;
 		this.noteDegree = 1;
-		this.noteEvent =  ( time: noteStart, sustain: noteSustain, degree: noteDegree);
+		this.noteEvent =  ( time: noteStart.postln, sustain: noteSustain, degree: noteDegree).postln;
 	}
 
 	draw {
