@@ -1,6 +1,8 @@
 # precess
 'Precession' a circular realtime note sequencer for Supercollider
 
+![precess image](https://imgur.com/a/IY1PwCR)
+
 # instructions
 
 - Place all files residing in the folder 'Classes' inside your system's supercollider extension folder
