@@ -1,16 +1,15 @@
 RealTimeEventStreamPlayer {
 
-	var patternDur = 4, baseBarBeat, <>sequence, <>pattern, <>stream, <>player;
+	var patternDur = 4, baseBarBeat, <>sequence, <>pattern, <>stream, <>player, <>midiOut, <>synthDef;
 
 	*new {
 		^super.new.init();
 	}
 
 	init {
-		this.sequence = LinkedList.new;
-		[
-			(degree: 0, time: 0.0, sustain: 0.2)
-		].do { |item| sequence.add(item) };
+		this.sequence = PrecessLinkedList.new;
+
+		this.synthDef = synthDef ?? \default;
 
 		// can't just Pseq because we need to account for insertions
 		this.pattern = Prout { |inval|
@@ -19,7 +18,7 @@ RealTimeEventStreamPlayer {
 			var item, node,
 			clock = TempoClock,
 			barline = clock.nextBar,
-			nextTime, delta;
+			nextTime, delta, endTime;
 			baseBarBeat = barline;
 
 			//start with the first node in the sequence
@@ -38,24 +37,48 @@ RealTimeEventStreamPlayer {
 					inval = Event.silent(nextTime - clock.beats).yield;
 				};
 
-				// now we arrived at the event - we subtract its time with the next event's time to get the duration
+				// now we arrived at the event
+				endTime = node.obj[\time] + node.obj[\sustain];
+
+				// calculate the "rest" time after this node.
 				// if it's last in sequence we substract it with the 'next-bar' time a.k.a. sequence length
 				if(node.next.notNil) {
-					delta = node.next.obj[\time] - item[\time];
+					delta = node.next.obj[\time] - endTime;
 				} {
-					delta = patternDur - item[\time];
+					delta = patternDur - endTime;
 				};
+
+				if( node.next.notNil and: {  node.next.obj[\time] <  endTime } , {
+					//whenever there is a crossover with notes (multi-voiced) we need to calculate the legato
+					var dur, legato;
+					dur = node.next.obj[\time] - node.obj[\time];
+					legato = node.obj[\sustain] / dur;
+					inval = item.copy.put(\dur, dur).put(\legato, legato).put(\note, 0);
+
+					if( midiOut.notNil, {
+						inval = inval.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel, 1).put(\midinote, 0).yield;
+					},{
+						inval = inval.copy.put(\type, \note).put(\instrument, synthDef).yield;
+					});
+
+				}, {
+					//smoothly lined up with rests
+					inval = item.copy.put(\dur, node.obj[\sustain]).put(\note, 0);
+
+					if( midiOut.notNil, {
+						inval = inval.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel,1).put(\midinote, 0).yield;
+					},{
+						inval = inval.copy.put(\type, \note).put(\instrument, synthDef).yield;
+					});
+
+					inval =  Event.silent( delta ).yield;
+				});
 
 				//we need to update the 'next-bar' variable once we will reach the end of the current bar-sequence
 				if(clock.beats + delta - barline >= patternDur) {
 					barline = barline + patternDur;
 					baseBarBeat = barline;
 				};
-
-				//this creates the actual event and puts it into the Pattern
-				inval = item.copy.put(\dur, delta);
-				inval = inval.copy.put(\instrument, \pm);
-				inval = inval.copy.put(\note, 24).yield;
 
 				//continue the loop
 				node = node.next;
@@ -64,12 +87,20 @@ RealTimeEventStreamPlayer {
 		};
 
 		this.stream = pattern.asStream;
-		this.player = EventStreamPlayer(stream).play(doReset: true);
 	}
 
 	getBeats {
 		var clock = TempoClock;
 		^clock.beats
+	}
+
+	start {
+		player = EventStreamPlayer(stream).play(doReset: true);
+	}
+
+	stop {
+		player.stop();
+		player.reset();
 	}
 
 	// functions to change sequence
@@ -98,59 +129,56 @@ RealTimeEventStreamPlayer {
 	}
 
 	insertNote { |time, sustain|
-		var node, new;
+		var node, new, idx;
 
-		//search for place to insert
-		node = sequence.nodeAt(0);
-		while {
-			node.notNil and: { node.obj[\time] < time }
-		} {
-			node = node.next;
-		};
+		idx = 0;
 
-		//we found the place to insert our new node
-		new = LinkedListNode((sustain: sustain, time: time));
+		if( sequence.size == 0, {
+			//if empty insert first node
+			sequence.addFirst( (sustain: sustain, time: time) )
+		},{
+			//search for place to insert
+			node = sequence.nodeAt(0);
+			while {
+				node.notNil and: { node.obj[\time] < time }
+			} {
+				node = node.next;
+				idx = idx + 1;
+			};
 
-		if(node.notNil) {
-			// change A --> C into A --> B --> C; B = new; C = node
-			new.prev = node.prev;  // B <-- A
-			if (node.prev.notNil, { node.prev.next = new }) ;// A --> B
-			new.next = node;  // B --> C
-			if (node.prev.notNil, { node.prev = new }); //  C <-- B
-		} {
-			new.prev = sequence.findNodeOfObj(sequence.last);  // add at the end
-			sequence.findNodeOfObj(sequence.last).next = new;
-		};
+			//we found the place to insert our new node
+			new = (sustain: sustain, time: time);
 
-		//we do not need the time argument?
-		this.reschedule.(time);
+			if(node.notNil) {
+				sequence.insertAt(idx, new);
+			} {
+				sequence.add(new);
+			};
+
+			//we do not need the time argument?
+			this.reschedule.(time);
+		})
 	}
 
 	deleteNote { |time, sustain|
-		var node, next;
+		var node, next, idx;
+		idx = 0;
 
 		// search for node to delete
 		node = sequence.nodeAt(0);
 		while {
 			node.notNil and: {
-				node.obj[\time] != time and: { node.obj[\sustain] != sustain }
+				((node.obj[\time] == time) && (node.obj[\sustain] == sustain)).not
 			}
 		} {
 			node = node.next;
+			idx = idx + 1;
 		};
 
-		if(node.notNil and: {node.next.notNil}) {
-			next = node.next;
-			next.prev = node.prev;
-			node.prev.next = next;
-		}{
-			if(node.notNil and: {node.next.isNil}) {
-				node.prev.next = nil;
-			}
-		}
-		// not really necessary to reschedule
-		// the Prout will add rests automatically
-		// if the next note to play was deleted
+		if(node.notNil, {
+			sequence.removeAt(idx);
+		});
+
+		//this.reschedule.(time);
 	}
 }
-
