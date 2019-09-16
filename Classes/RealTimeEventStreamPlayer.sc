@@ -18,7 +18,7 @@ RealTimeEventStreamPlayer {
 			var item, node,
 			clock = TempoClock,
 			barline = clock.nextBar,
-			nextTime, delta, endTime;
+			nextTime, delta, restTime, endTime;
 			baseBarBeat = barline;
 
 			//start with the first node in the sequence
@@ -38,21 +38,30 @@ RealTimeEventStreamPlayer {
 				};
 
 				// now we arrived at the event
-				endTime = node.obj[\time] + node.obj[\sustain];
+				//calculate the end time of the event
+				endTime = item[\time] + item[\sustain];
 
 				// calculate the "rest" time after this node.
 				// if it's last in sequence we substract it with the 'next-bar' time a.k.a. sequence length
 				if(node.next.notNil) {
-					delta = node.next.obj[\time] - endTime;
+					restTime = node.next.obj[\time] - endTime;
+					delta =  node.next.obj[\time] - item[\time];
 				} {
-					delta = patternDur - endTime;
+					restTime = patternDur - endTime;
+					delta =  patternDur - item[\time];
+				};
+
+				//we need to update the 'next-bar' variable once we will reach the end of the current bar-sequence
+				if(clock.beats + delta - barline >= patternDur) {
+					barline = barline + patternDur;
+					baseBarBeat = barline;
 				};
 
 				if( node.next.notNil and: {  node.next.obj[\time] <  endTime } , {
 					//whenever there is a crossover with notes (multi-voiced) we need to calculate the legato
 					var dur, legato;
-					dur = node.next.obj[\time] - node.obj[\time];
-					legato = node.obj[\sustain] / dur;
+					dur = node.next.obj[\time] - item[\time];
+					legato = item[\sustain] / dur;
 					inval = item.copy.put(\dur, dur).put(\legato, legato).put(\note, 0);
 
 					if( midiOut.notNil, {
@@ -63,7 +72,7 @@ RealTimeEventStreamPlayer {
 
 				}, {
 					//smoothly lined up with rests
-					inval = item.copy.put(\dur, node.obj[\sustain]).put(\note, 0);
+					inval = item.copy.put(\dur, item[\sustain]).put(\note, 0);
 
 					if( midiOut.notNil, {
 						inval = inval.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel,1).put(\midinote, 0).yield;
@@ -71,14 +80,8 @@ RealTimeEventStreamPlayer {
 						inval = inval.copy.put(\type, \note).put(\instrument, synthDef).yield;
 					});
 
-					inval =  Event.silent( delta ).yield;
+					inval =  Event.silent( restTime ).yield;
 				});
-
-				//we need to update the 'next-bar' variable once we will reach the end of the current bar-sequence
-				if(clock.beats + delta - barline >= patternDur) {
-					barline = barline + patternDur;
-					baseBarBeat = barline;
-				};
 
 				//continue the loop
 				node = node.next;
