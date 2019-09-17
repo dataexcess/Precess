@@ -28,7 +28,7 @@ RealTimeEventStreamPlayer {
 				item = node.tryPerform(\obj);
 				item.notNil
 			} {
-				//Out next event's start-time
+				//Our next event's start-time
 				nextTime = barline + item[\time];
 
 				//if this is bigger then current beats this means we are in the start of our loop ->
@@ -45,10 +45,10 @@ RealTimeEventStreamPlayer {
 				// if it's last in sequence we substract it with the 'next-bar' time a.k.a. sequence length
 				if(node.next.notNil) {
 					restTime = node.next.obj[\time] - endTime;
-					delta =  node.next.obj[\time] - item[\time];
+					delta =  node.next.obj[\time] - item[\time]; //used for next-barline calculation
 				} {
 					restTime = patternDur - endTime;
-					delta =  patternDur - item[\time];
+					delta =  patternDur - item[\time]; //used for next-barline calculation
 				};
 
 				//we need to update the 'next-bar' variable once we will reach the end of the current bar-sequence
