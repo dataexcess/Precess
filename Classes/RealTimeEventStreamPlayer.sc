@@ -57,29 +57,28 @@ RealTimeEventStreamPlayer {
 					baseBarBeat = barline;
 				};
 
+				//we prepare our Event
+				if( midiOut.notNil, {
+					inval = item.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel, 1).put(\midinote, 0);
+				},{
+					inval = item.copy.put(\type, \note).put(\instrument, synthDef).put(\note, 0);
+				});
+
+				//whenever there is a crossover with notes (multi-voiced) we need to calculate the duration and legato
 				if( node.next.notNil and: {  node.next.obj[\time] <  endTime } , {
-					//whenever there is a crossover with notes (multi-voiced) we need to calculate the legato
+
 					var dur, legato;
 					dur = node.next.obj[\time] - item[\time];
 					legato = item[\sustain] / dur;
-					inval = item.copy.put(\dur, dur).put(\legato, legato).put(\note, 0);
 
-					if( midiOut.notNil, {
-						inval = inval.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel, 1).put(\midinote, 0).yield;
-					},{
-						inval = inval.copy.put(\type, \note).put(\instrument, synthDef).yield;
-					});
+					//simply play the note until start of the next note - the legato will take care of the crossover part
+					inval = inval.copy.put(\dur, dur).put(\legato, legato).yield;
 
 				}, {
-					//smoothly lined up with rests
-					inval = item.copy.put(\dur, item[\sustain]).put(\note, 0);
+					//smoothly lined up with rests so we simply take the note's duration as \dur argument
+					inval = inval.copy.put(\dur, item[\sustain]).yield;
 
-					if( midiOut.notNil, {
-						inval = inval.copy.put(\type, \midi).put(\midiout, midiOut).put(\channel,1).put(\midinote, 0).yield;
-					},{
-						inval = inval.copy.put(\type, \note).put(\instrument, synthDef).yield;
-					});
-
+					//we also need to play the silent event after the note is finished until reaching to the next one
 					inval =  Event.silent( restTime ).yield;
 				});
 

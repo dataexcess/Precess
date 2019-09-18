@@ -1,6 +1,8 @@
 (
 w = Window("Precess", Rect(20,20,600,600)).front.acceptsMouseOver_(true);
 
+s.latency = 0.07;
+
 MIDIClient.init(0,1);
 ~midiOut =  MIDIOut(0, MIDIClient.destinations[1].uid);
 ~realTimePlayer = RealTimeEventStreamPlayer();
