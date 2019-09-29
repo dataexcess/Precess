@@ -1,9 +1,11 @@
-Precess {
+Precess : View {
 
 	var bounds, <userView, timeIndicatorView,
 	>strokeWidth, >strokeColor, >discAmount,
-	>divisions, <>discs, >hoverBlock, >selectedBlock,
-	<>player, <>isRunning, <>time=0;
+	<>divisions, <>discs, >hoverBlock, >selectedBlock,
+	<>player, <>isRunning, <>time=0, <>circleRadius,
+	<>deleteNoteCallback, <>insertNoteCallback,
+	<>divisionsChangedCallback;
 
 	*new {
 		| parent bounds divisions player|
@@ -13,23 +15,18 @@ Precess {
 	init {
 		| parent bounds divisions player|
 		var padding = 20;
-		var circleRadius = (bounds.width / 2)  - padding;
+		this.circleRadius = (bounds.width / 2)  - padding;
 		this.player = player ??  RealTimeEventStreamPlayer();
 		this.divisions = divisions;
+		this.bounds = bounds;
 		strokeColor = Color.black;
 		strokeWidth = 1;
 
-		userView = UserView(parent, Rect(0,0, bounds.width, bounds.height));
+		userView = UserView(parent, Rect(0,0,bounds.width, bounds.height));
 		this.setup(bounds);
 
-		Button(parent, Rect(10, 10, 80, 20))
-		.states_([["START"],["STOP"]])
-		.action_({ arg button;
-			if (button.value == 1, { this.start; }, { this.stop });
-		});
-
 		userView
-		.background_(Color.black)
+		.background_(Color.clear)
 		.drawFunc_({ |me|
 			Pen.width = strokeWidth;
 			Pen.strokeColor = Color.white;
@@ -52,11 +49,11 @@ Precess {
 
 							//NOTE WAS ON
 							currentBlock.isOn = false;
-							player.deleteNote(currentBlock.noteEvent[\time], currentBlock.noteEvent[\sustain]);
+							this.deleteNoteCallback.(currentBlock);
 						},{
 							//NOTE WAS OFF
 							currentBlock.isOn = true;
-							player.insertNote(currentBlock.noteEvent[\time], currentBlock.noteEvent[\sustain]);
+							this.insertNoteCallback.(currentBlock);
 						});
 
 						me.refresh;
@@ -66,14 +63,17 @@ Precess {
 			this.updateTimeIndicator();
 		})
 		.mouseUpAction_({ |me,x,y,mod|
-			selectedBlock.isSelected = false;
-			selectedBlock = nil;
-			me.refresh;
+
+			if (selectedBlock.notNil, {
+				selectedBlock.isSelected = false;
+				selectedBlock = nil;
+				me.refresh;
+			})
 		});
 
 		userView.refresh;
 
-		timeIndicatorView = UserView(parent, Rect(0,0, bounds.width, bounds.height))
+		timeIndicatorView = UserView(parent, Rect(0,0,bounds.width, bounds.height))
 		.acceptsMouse_(false)
 		.background_(Color.clear)
 		.drawFunc_({ |me|
@@ -91,8 +91,6 @@ Precess {
 	}
 
 	setup { |bounds|
-		var padding = 20;
-		var circleRadius = (bounds.width / 2)  - padding;
 		var discAmount = divisions.size;
 		var discWidth = circleRadius / discAmount;
 
@@ -131,23 +129,53 @@ Precess {
 	}
 
 	initialiseWithFirstQuarterNote {
-		var initialBlock = discs[2].blocks[0];
+		var initialBlock = discs[1].blocks[0];
 		initialBlock.isOn = true;
 		player.insertNote(initialBlock.noteEvent[\time], initialBlock.noteEvent[\sustain]);
 		userView.refresh;
+	}
+
+	sizeHint {
+		^userView.sizeHint;
+	}
+
+	minSizeHint {
+		^userView.minSizeHint;
+	}
+
+	setDiscs_ { |discsCompact|
+		var newDivisions = discsCompact.collect({ arg subList; subList.size });
+		var discAmount = newDivisions.size;
+		var discWidth = circleRadius / discAmount;
+		divisions = newDivisions;
+
+		discs = discsCompact.collect({ arg blockList, idx;
+			var disc = Disc(idx);
+			disc.blocks = blockList.collect({ arg state, segment;
+				var block = Block(userView, discWidth, disc, blockList.size, segment);
+				block.isOn = state;
+			});
+		});
+
+		divisionsChangedCallback.(newDivisions);
+		userView.refresh;
+	}
+
+	discsCompact {
+		var noteOns = discs.collect({ arg disc; disc.blocks.collect({ arg block; block.isOn })});
+		noteOns.postln;
+		^noteOns;
 	}
 }
 
 Disc {
 	var <>idx, <>blocks, <>isOn;
 
-	*new {
-		| idx |
+	*new { | idx |
 		^super.new.init(idx);
 	}
 
-	init {
-		| idx |
+	init { | idx |
 		this.idx = idx;
 	}
 }
@@ -184,36 +212,44 @@ Block {
 
 	draw {
 		var startArcAngle =  (startAngle + 1.5pi).wrap(0,2pi);
+		startDistance = max(startDistance, 0.0000000000001);
 		Pen.addAnnularWedge(parent.bounds.center, startDistance, endDistance, startArcAngle, divisionAngle );
 
 		if (isSelected, {
+
+			//SELECTED + ON
+			if (isOn, {
+				Pen.fillColor = Color.white;
+				Pen.strokeColor = Color.black;
+				Pen.width = 4;
+				Pen.fillStroke;
+
+				Pen.addAnnularWedge(parent.bounds.center, startDistance, endDistance, startArcAngle, divisionAngle );
+			});
+
 			//SELECTED + OFF
-			strokeWidth = 3;
-			strokeColor = Color.red;
-			fillColor = Color.white.alpha_(0.1);
+			Pen.strokeColor = strokeColor;
+			Pen.fillColor = fillColor;
+			Pen.width = strokeWidth;
+			Pen.fillStroke;
 
-			if (isOn, {
-				//SELECTED + ON
-				strokeColor = Color.red;
-				fillColor = Color.grey;
-			})
 		},{
-			//UNSELECTED + OFF
-			strokeWidth = 1;
-			strokeColor = Color.white;
-			fillColor = Color.clear;
-
+			//UNSELECTED + ON
 			if (isOn, {
-				//UNSELECTED + ON
-				strokeColor = Color.white;
-				fillColor = Color.grey;
-			})
-		});
+				Pen.fillColor = Color.white;
+				Pen.strokeColor = Color.black;
+				Pen.width = 4;
+				Pen.fillStroke;
 
-		Pen.strokeColor = strokeColor;
-		Pen.fillColor = fillColor;
-		Pen.width = strokeWidth;
-		Pen.fillStroke;
+				Pen.addAnnularWedge(parent.bounds.center, startDistance, endDistance, startArcAngle, divisionAngle );
+			});
+
+			//UNSELECTED + OFF
+			Pen.fillColor =  Color.clear;
+			Pen.strokeColor = Color.white;
+			Pen.width = 1;
+			Pen.fillStroke;
+		});
 	}
 
 	containsPoint { | mouse |
