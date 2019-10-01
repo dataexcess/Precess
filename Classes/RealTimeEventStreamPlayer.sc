@@ -1,74 +1,101 @@
 RealTimeEventStreamPlayer {
 
-	var patternDur = 4, barline, <>sequence, <>pattern, <>stream, <>player, <>midiOut, <>synthDef;
+	var patternDur = 4, barline, <>sequence, <>pattern, <>stream, <>player, <>midiOut, <>synthDef, <>currentNode, <>note;
 
-	*new {
-		^super.new.init();
+	*new { |note|
+		^super.new.init(note);
 	}
 
-	init {
+	init { |note|
+		this.note = note ?? 0;
 		this.sequence = PrecessLinkedList.new;
-
 		this.synthDef = synthDef ?? \default;
+		MIDIClient.init(0,1);
+		this.midiOut =  MIDIOut(0, MIDIClient.destinations[1].uid); ////MIDI SETUP
 
-		// can't just Pseq because we need to account for insertions
 		this.pattern = Prout { |inval|
 
-			//Starting variables
-			var item, node,
-			clock = TempoClock,
-			nextTime, delta, restTime, endTime;
+			var item, clock = TempoClock, nextTime, delta, currentBar, barline = clock.nextBar, currentItem;
 
-			barline = clock.nextBar;
+			//infinite loop
+			while { true }
+			{
+				//full bar silence inserted every bar if sequence is empty
+				if( sequence.isEmpty, {
+					currentBar = player.clock.bars2beats(player.clock.bar);
+					if(clock.nextBar <= currentBar, { barline = currentBar + clock.beatsPerBar }, { barline = clock.nextBar });
+					inval = Event.silent( barline - clock.beats).yield;
+				}, {
+					//otherwise we start looping the sequence as long as it has nodes starting with the first
+					currentNode = sequence.nodeAt(0);
 
-			//start with the first node in the sequence
-			node = sequence.nodeAt(0);
-			while {
-				//While we have items in the sequence do this loop (infinite)
-				item = node.tryPerform(\obj);
-				item.notNil
-			} {
-				// barline = (clock.beats - (clock.beats % patternDur));
+					//start the loop
+					while {
+						currentNode.notNil;
+						currentItem = currentNode.tryPerform(\obj); //get the node's event
+						currentItem.notNil;
+					} {
+						//get the current bar
+						currentBar = clock.bars2beats(player.clock.bar);
 
-				//Our next event's start-time
-				nextTime = barline + item[\time];
+						//Our next event's start-time
+						nextTime = currentBar + currentItem[\time];
 
-				//if the time-indicator is smaller then our next event we insert a wait
-				//this is always true for a first note in the sequence not placed at 0 (start-time)
-				if(clock.beats < nextTime) {
-					// "silent inserted".postln;
-					inval = Event.silent(nextTime - clock.beats).yield;
-				};
+						//if the time-indicator is smaller then our next event we insert a rest (time before first note)
+						if(clock.beats < nextTime, {
 
-				// if it's last in sequence we substract it with the 'next-bar' time a.k.a. sequence length
-				if(node.next.notNil) {
-					delta =  node.next.obj[\time] - item[\time]; //used for next-barline calculation
-				} {
-					delta =  patternDur - item[\time]; //used for next-barline calculation
-				};
+							//rest duration equals time now until start-time of next-event
+							inval = currentItem.copy.put(\type, \rest).put(\dur, nextTime - clock.beats).yield;
 
-				//we need to update the 'next-bar' variable once we will reach the end of the current bar-sequence
-				if(clock.beats + delta - barline >= patternDur) {
-					// "reached".postln;
-					barline = barline + patternDur;
-				};
+							//reset to first node so next time we will actually (re-)play this first event
+							currentNode = sequence.nodeAt(0);
+						},{
 
-				//we prepare our Event
-				if( midiOut.notNil, {
-					inval = item.copy.put(\type, \midi).put(\midiout, midiOut).put(\chan, 1).put(\midinote, 1);
+							//calculate the event's duration (not sustain)
+							if(currentNode.next.notNil) {
 
-				},{
-					inval = item.copy.put(\type, \note, \instrument, synthDef).put(\note, 0);
-				});
+								//use time until next node
+								delta =  currentNode.next.obj[\time] - currentItem[\time];
+							} {
 
-				inval = inval.copy.put(\dur, delta, \sustain, item[\sustain]).yield;
+								//if it is the last use the next-bar as reference
+								delta =  clock.beatsPerBar - currentItem[\time];
+							};
 
-				//continue the loop
-				node = node.next;
-				if(node.isNil) { node = sequence.nodeAt(0) };
-			}
+							//we prepare our Event
+							if( midiOut.notNil, {
+
+								//midi
+								inval = currentItem.copy.put(\type, \midi).put(\midiout, midiOut).put(\chan, 0).put(\midinote, this.note);
+							},{
+
+								//test-sound
+								inval = currentItem.copy.put(\type, \note, \instrument, synthDef).put(\note, this.note);
+							});
+
+							//our event's duration and sustain
+							inval = inval.copy.put(\dur, delta, \sustain, currentItem[\sustain]).yield;
+
+							//current Node might be null if we switch to an empty preset
+							if (currentNode.notNil, {
+
+								//continue the loop
+								currentNode = currentNode.next;
+
+								//if next node is nil set it to the first. If not, exit loop.
+								if(currentNode.isNil, {
+									if (sequence.isEmpty.not, {
+										currentNode = sequence.nodeAt(0);
+									});
+								});
+							});
+						});
+					}
+				})
+			};
 		};
 
+		//save the pattern as a stream
 		this.stream = pattern.asStream;
 	}
 
@@ -86,73 +113,61 @@ RealTimeEventStreamPlayer {
 		player.reset();
 	}
 
-	// functions to change sequence
-	reschedule { |time|
-		var phaseNow, reschedTime, nextNodeToPlay, clock;
+	reschedule {
+		var phase, reschedTime, clock, currentBar, nextBar, nextItem, nextNode;
 
-		//this gives us the phase of the current bar [0-patternLength]
-		phaseNow = (player.clock.beats - barline) % patternDur;
+		//some data to work with
+		phase = player.clock.beatInBar;
+		currentBar = player.clock.bars2beats(player.clock.bar);
+		if(player.clock.nextBar <= currentBar, { nextBar = currentBar + clock.beatsPerBar }, { nextBar = player.clock.nextBar });
 
 		//we search for the next node to play in the sequence given the current phase
-		nextNodeToPlay = sequence.detect { |item| item[\time] >= phaseNow };
+		nextItem = sequence.detect { |item| item[\time] >= phase };
 
-		//if nextNodeToPlay is last in sequence and we already past the previous last note...
-		//we need to reset the barline to the current one
-		if( nextNodeToPlay == sequence.last and: { phaseNow > sequence.findNodeOfObj(sequence.last).prev.obj[\time]  }, {
-			barline = barline - patternDur;
+		//schedule the player
+		if(nextItem.notNil, {
+			//schedule on the next first node
+			reschedTime = currentBar + nextItem[\time];
+			nextNode = sequence.findNodeOfObj(nextItem);
+		},{
+			//otherwise wait til next bar
+			reschedTime = nextBar;
 		});
-
-		//if we found one we take its time-value as a starting-point to schedule our next player
-		if(nextNodeToPlay.notNil) {
-			reschedTime = barline + nextNodeToPlay[\time];
-		} {
-			//if not we just take the next bar
-			reschedTime = (player.clock.beats - barline).roundUp(patternDur);
-		};
 
 		//swap out stream players
 		clock = player.clock;
 		player.stop;
 		player = EventStreamPlayer(stream);
 		clock.schedAbs(reschedTime, player.refresh);
+		^nextNode;
 	}
 
 	switchToSequence { |newSequence|
-		var phaseNow, reschedTime, nextNodeOld, nextNodeNew, clock;
+		var nextNode;
 
-		//this gives us the phase of the current bar [0-patternLength]
-		phaseNow = (player.clock.beats - barline) % patternDur;
+		//swap the sequence
+		sequence = newSequence.deepCopy;
 
-		//we search for the next node to play in the sequence given the current phase
-		nextNodeOld= sequence.detect { |item| item[\time] >= phaseNow };
+		//reschedule
+		nextNode = this.reschedule;
 
-		nextNodeNew = newSequence.detect { |item| item[\time] >= phaseNow };
-
-
-		//if nextNodeToPlay is last in sequence and we already past the previous last note...
-		//we need to reset the barline to the current one
-		if(  nextNodeOld.isNil  and: { nextNodeNew.notNil }, {
-			barline = barline - patternDur;
-			"RESET".postln;
+		if( nextNode.notNil, {
+			if( nextNode.prev.notNil, {
+				//currentNode needs to be the previous one of the new node
+				currentNode = nextNode.prev;
+			}, {
+				//otherwise the first node
+				currentNode = sequence.first;
+			});
+		}, {
+			if (sequence.isEmpty.not, {
+				//if we already past the last node, we set the first node
+				currentNode = sequence.first;
+			},{
+				//if there are no nodes in new sequence, currentNode nil & exit loop
+				currentNode = nil;
+			});
 		});
-
-		//if we found one we take its time-value as a starting-point to schedule our next player
-		if(nextNodeNew.notNil) {
-			reschedTime = barline + nextNodeNew[\time];
-			"rescheduled somewhere before the next bar".postln;
-		} {
-			//if not we just take the next bar
-			reschedTime = (player.clock.beats - barline).roundUp(patternDur);
-			"rescheduled FOR next bar".postln;
-		};
-
-		this.sequence = newSequence.deepCopy;
-
-		//swap out stream players
-		clock = player.clock;
-		player.stop;
-		player = EventStreamPlayer(stream);
-		clock.schedAbs(reschedTime, player.refresh);
 	}
 
 	insertNote { |time, sustain|
@@ -181,10 +196,9 @@ RealTimeEventStreamPlayer {
 			} {
 				sequence.add(new);
 			};
+		});
 
-			//we do not need the time argument?
-			this.reschedule.(time);
-		})
+		this.reschedule;
 	}
 
 	deleteNote { |time, sustain|
@@ -204,8 +218,9 @@ RealTimeEventStreamPlayer {
 
 		if(node.notNil, {
 			sequence.removeAt(idx);
+			("removed at "+idx).postln;
 		});
 
-		this.reschedule.(time);
+		this.reschedule;
 	}
 }
