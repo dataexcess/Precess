@@ -1,28 +1,26 @@
 RealTimeEventStreamPlayer {
 
-	var patternDur = 4, barline, <>sequence, <>pattern, <>stream, <>player, <>midiOut, <>synthDef, <>currentNode, <>note;
+	var <>clock, patternDur = 4, barline, <>sequence, <>pattern, <>stream, <>player, <>midiOut, <>currentNode, <>note, isResting = true, <>isRunning = false;
 
-	*new { |note|
-		^super.new.init(note);
+	*new { |note midiOut|
+		^super.new.init(note, midiOut);
 	}
 
-	init { |note|
+	init { |note midiOut|
 		this.note = note ?? 0;
 		this.sequence = PrecessLinkedList.new;
-		this.synthDef = synthDef ?? \default;
-		MIDIClient.init(0,1);
-		this.midiOut =  MIDIOut(0, MIDIClient.destinations[1].uid); ////MIDI SETUP
-
+		// this.clock = TempoClock; //or LinkClock
+		this.midiOut = midiOut;
 		this.pattern = Prout { |inval|
 
-			var item, clock = TempoClock, nextTime, delta, currentBar, barline = clock.nextBar, currentItem;
+			var item, nextTime, delta, currentBar, barline = clock.nextBar, currentItem;
 
 			//infinite loop
 			while { true }
 			{
 				//full bar silence inserted every bar if sequence is empty
 				if( sequence.isEmpty, {
-					currentBar = player.clock.bars2beats(player.clock.bar);
+					currentBar = clock.bars2beats(clock.bar);
 					if(clock.nextBar <= currentBar, { barline = currentBar + clock.beatsPerBar }, { barline = clock.nextBar });
 					inval = Event.silent( barline - clock.beats).yield;
 				}, {
@@ -35,8 +33,11 @@ RealTimeEventStreamPlayer {
 						currentItem = currentNode.tryPerform(\obj); //get the node's event
 						currentItem.notNil;
 					} {
+
+						//clock.postln;
+
 						//get the current bar
-						currentBar = clock.bars2beats(player.clock.bar);
+						currentBar = clock.bars2beats(clock.bar);
 
 						//Our next event's start-time
 						nextTime = currentBar + currentItem[\time];
@@ -44,33 +45,33 @@ RealTimeEventStreamPlayer {
 						//if the time-indicator is smaller then our next event we insert a rest (time before first note)
 						if(clock.beats < nextTime, {
 
+							//player.clock.beats.postln;
+
+							//this is the rest-period
+							isResting = true;
+
 							//rest duration equals time now until start-time of next-event
 							inval = currentItem.copy.put(\type, \rest).put(\dur, nextTime - clock.beats).yield;
-
-							//reset to first node so next time we will actually (re-)play this first event
-							currentNode = sequence.nodeAt(0);
 						},{
+							//no more resting
+							isResting = false;
 
 							//calculate the event's duration (not sustain)
 							if(currentNode.next.notNil) {
-
 								//use time until next node
 								delta =  currentNode.next.obj[\time] - currentItem[\time];
 							} {
-
 								//if it is the last use the next-bar as reference
 								delta =  clock.beatsPerBar - currentItem[\time];
 							};
 
 							//we prepare our Event
 							if( midiOut.notNil, {
-
 								//midi
-								inval = currentItem.copy.put(\type, \midi).put(\midiout, midiOut).put(\chan, 0).put(\midinote, this.note);
+								inval = currentItem.copy.put(\type, \midi).put(\midiout, this.midiOut).put(\chan, 1).put(\midinote, this.note);
 							},{
-
 								//test-sound
-								inval = currentItem.copy.put(\type, \note, \instrument, synthDef).put(\note, this.note);
+								inval = currentItem.copy.put(\type, \note, \instrument, \default).put(\note, this.note);
 							});
 
 							//our event's duration and sustain
@@ -89,9 +90,9 @@ RealTimeEventStreamPlayer {
 									});
 								});
 							});
-						});
+						})
 					}
-				})
+				});
 			};
 		};
 
@@ -99,27 +100,31 @@ RealTimeEventStreamPlayer {
 		this.stream = pattern.asStream;
 	}
 
-	getBeats {
-		var clock = TempoClock;
-		^clock.beats
-	}
-
 	start {
-		player = EventStreamPlayer(stream).play(doReset: true);
+		player = EventStreamPlayer(stream).play(clock, doReset: true); //TempoClock
+		isRunning = true;
 	}
 
 	stop {
 		player.stop();
 		player.reset();
+		isRunning = false;
+	}
+
+	clearAll {
+		currentNode = nil;
+		sequence = PrecessLinkedList();
 	}
 
 	reschedule {
 		var phase, reschedTime, clock, currentBar, nextBar, nextItem, nextNode;
 
-		//some data to work with
-		phase = player.clock.beatInBar;
-		currentBar = player.clock.bars2beats(player.clock.bar);
-		if(player.clock.nextBar <= currentBar, { nextBar = currentBar + clock.beatsPerBar }, { nextBar = player.clock.nextBar });
+		clock = player.clock;
+
+		//some variables to work with
+		phase = clock.beatInBar;
+		currentBar = clock.bars2beats(clock.bar);
+		if(clock.nextBar <= currentBar, { nextBar = currentBar + clock.beatsPerBar }, { nextBar = clock.nextBar });
 
 		//we search for the next node to play in the sequence given the current phase
 		nextItem = sequence.detect { |item| item[\time] >= phase };
@@ -129,45 +134,33 @@ RealTimeEventStreamPlayer {
 			//schedule on the next first node
 			reschedTime = currentBar + nextItem[\time];
 			nextNode = sequence.findNodeOfObj(nextItem);
+
+			if (nextNode.prev.notNil, {
+				if(	isResting.not, {
+					//only do this when we are not waiting until the first note to play
+					//otherwise this will mess up the sequence
+					currentNode = nextNode.prev;
+				});
+			},{
+				currentNode = sequence.nodeAt(0);
+			});
 		},{
-			//otherwise wait til next bar
+			currentNode = sequence.last;
 			reschedTime = nextBar;
 		});
 
 		//swap out stream players
-		clock = player.clock;
+		//clock = player.clock;
 		player.stop;
+
 		player = EventStreamPlayer(stream);
-		clock.schedAbs(reschedTime, player.refresh);
+		clock.schedAbs(reschedTime, player.refresh); //player.refresh
 		^nextNode;
 	}
 
 	switchToSequence { |newSequence|
-		var nextNode;
-
-		//swap the sequence
 		sequence = newSequence.deepCopy;
-
-		//reschedule
-		nextNode = this.reschedule;
-
-		if( nextNode.notNil, {
-			if( nextNode.prev.notNil, {
-				//currentNode needs to be the previous one of the new node
-				currentNode = nextNode.prev;
-			}, {
-				//otherwise the first node
-				currentNode = sequence.first;
-			});
-		}, {
-			if (sequence.isEmpty.not, {
-				//if we already past the last node, we set the first node
-				currentNode = sequence.first;
-			},{
-				//if there are no nodes in new sequence, currentNode nil & exit loop
-				currentNode = nil;
-			});
-		});
+		this.reschedule;
 	}
 
 	insertNote { |time, sustain|
@@ -191,14 +184,14 @@ RealTimeEventStreamPlayer {
 			//we found the place to insert our new node
 			new = (sustain: sustain, time: time);
 
-			if(node.notNil) {
+			if(node.notNil, {
 				sequence.insertAt(idx, new);
-			} {
+			}, {
 				sequence.add(new);
-			};
+			});
 		});
 
-		this.reschedule;
+		if( isRunning, { this.reschedule });
 	}
 
 	deleteNote { |time, sustain|
@@ -221,6 +214,6 @@ RealTimeEventStreamPlayer {
 			("removed at "+idx).postln;
 		});
 
-		this.reschedule;
+		if( isRunning, { this.reschedule });
 	}
 }

@@ -2,26 +2,28 @@ Precess : View {
 
 	var bounds, <userView, timeIndicatorView,
 	>strokeWidth, >strokeColor, >discAmount,
-	<>divisions, <>discs, >hoverBlock, >selectedBlock,
-	<>player, <>isRunning, <>time=0, <>circleRadius,
-	<>deleteNoteCallback, <>insertNoteCallback,
-	<>divisionsChangedCallback;
+	<>clock, <>divisions, <>discs, >hoverBlock, >selectedBlock,
+	<>isRunning, <>time=0, <>circleRadius, <>noteClickCallback,
+	<>divisionsChangedCallback, <>noteLeftDragCallback, <>noteRightDragCallback,
+	<>noteDrawCallback, <>isDrawing;
 
 	*new {
-		| parent bounds divisions player|
-		^super.new.init(parent, bounds, divisions, player);
+		| parent bounds divisions|
+		^super.new.init(parent, bounds, divisions);
 	}
 
 	init {
-		| parent bounds divisions player|
+		| parent bounds divisions |
 		var padding = 20;
+		var mouseDownPoint = nil;
+
+		this.isDrawing = false;
 		this.circleRadius = (bounds.width / 2)  - padding;
-		this.player = player ??  RealTimeEventStreamPlayer();
 		this.divisions = divisions;
 		this.bounds = bounds;
+		this.clock = TempoClock; //or LinkClock();
 		strokeColor = Color.black;
 		strokeWidth = 1;
-
 		userView = UserView(parent, Rect(0,0,bounds.width, bounds.height));
 		this.setup(bounds);
 
@@ -37,37 +39,54 @@ Precess : View {
 		})
 		.mouseDownAction_({ |me,x,y,mod|
 
+			mouseDownPoint = (parent.bounds.left + x)@(parent.bounds.top + y);
+
 			discs.do({ arg disc;
 				disc.blocks.do({ arg block;
-
 					var currentBlock = block.containsPoint(x@y);
 					if (currentBlock.notNil, {
-						//SELECED BLOCK
 						selectedBlock = currentBlock;
-
-						if (currentBlock.isOn, {
-
-							//NOTE WAS ON
-							currentBlock.isOn = false;
-							this.deleteNoteCallback.(currentBlock);
-						},{
-							//NOTE WAS OFF
-							currentBlock.isOn = true;
-							this.insertNoteCallback.(currentBlock);
-						});
-
+						noteClickCallback.(currentBlock);
 						me.refresh;
 					})
 				})
 			});
-			this.updateTimeIndicator();
+			time = clock.bar;
 		})
 		.mouseUpAction_({ |me,x,y,mod|
-
 			if (selectedBlock.notNil, {
 				selectedBlock.isSelected = false;
 				selectedBlock = nil;
 				me.refresh;
+			})
+		})
+		.mouseMoveAction_({ |me,x,y,mod|
+
+			if( isDrawing, {
+				discs.do({ arg disc;
+					disc.blocks.do({ arg block;
+						var currentBlock = block.containsPoint(x@y);
+						if (currentBlock.notNil, {
+							if (currentBlock != selectedBlock, {
+								selectedBlock = currentBlock;
+								noteDrawCallback.(currentBlock);
+								me.refresh;
+							});
+						})
+					})
+				});
+
+			},{
+				var mouse =  (parent.bounds.left + x)@(parent.bounds.top + y);
+				if( (mouseDownPoint.x - mouse.x).abs > 3.0, {
+					if (mouse.x > mouseDownPoint.x, {
+						var value = [mouseDownPoint.x, Window.screenBounds.width].asSpec.unmap(mouse.x);
+						noteRightDragCallback.(selectedBlock, value)
+					},{
+						var value = 1.0 - [0, mouseDownPoint.x].asSpec.unmap(mouse.x);
+						noteLeftDragCallback.(selectedBlock, value)
+					});
+				})
 			})
 		});
 
@@ -83,11 +102,6 @@ Precess : View {
 			Pen.lineTo((0@0).translate(0@circleRadius).rotate( (time * (pi/2)) - pi).translate(me.bounds.center));
 			Pen.stroke;
 		});
-	}
-
-	updateTimeIndicator {
-		time = player.getBeats();
-		timeIndicatorView.refresh;
 	}
 
 	setup { |bounds|
@@ -110,29 +124,22 @@ Precess : View {
 	}
 
 	start {
-		player.start;
+		clock.beats = 0;
+		time = clock.beats;
+		timeIndicatorView.refresh;
 		isRunning = true;
-		time = player.getBeats();
 		{
 			while { isRunning }
 			{
 				timeIndicatorView.refresh;
 				0.05.wait;
-				time = player.getBeats();
+				time = clock.beats;
 			}
 		}.fork(AppClock)
 	}
 
 	stop {
-		player.stop;
 		isRunning = false;
-	}
-
-	initialiseWithFirstQuarterNote {
-		var initialBlock = discs[1].blocks[0];
-		initialBlock.isOn = true;
-		player.insertNote(initialBlock.noteEvent[\time], initialBlock.noteEvent[\sustain]);
-		userView.refresh;
 	}
 
 	sizeHint {
@@ -163,8 +170,12 @@ Precess : View {
 
 	discsCompact {
 		var noteOns = discs.collect({ arg disc; disc.blocks.collect({ arg block; block.isOn })});
-		noteOns.postln;
 		^noteOns;
+	}
+
+	clearBlocks {
+		discs.do{ arg disc; disc.blocks.do{ arg block; block.isOn = false } };
+		userView.refresh;
 	}
 }
 
@@ -207,7 +218,15 @@ Block {
 		this.noteStart =  (startAngle /2pi) * 4;
 		this.noteSustain = (1/divisions) * 4;
 		this.noteDegree = 1;
-		this.noteEvent =  (time: noteStart, sustain: noteSustain, degree: noteDegree);
+		this.noteEvent =  (time: noteStart, sustain: noteSustain, note: noteDegree);
+	}
+
+	nextBlock {
+		if (disc.blocks.last == this, { ^disc.blocks.first; }, { ^disc.blocks[segment+1] });
+	}
+
+	prevBlock {
+		if (disc.blocks.first == this, { ^disc.blocks.last }, { ^disc.blocks[segment-1] });
 	}
 
 	draw {

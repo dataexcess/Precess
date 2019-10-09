@@ -1,57 +1,155 @@
 PrecessGUI : Window {
-	var bounds, precess, player, midiOut, presets, channels, activeChannels, holdingShift, dictionary;
+	var precess, clock, players, currentPlayer, presets,
+	channels, activeChannel, activeChannels,
+	holdingShift, holding_A, holding_Q,
+	dictionary, midiOut;
 
 	*new {
 		| name bounds |
-		^super.new.init(name, bounds);
+		^super.new(name, bounds, false).init()
 	}
 
 	init {
-		| name bounds |
+		var startButton, bpmNumberBox, divisionsNumberBox, midiOutButton, linkButton, loadButton, saveButton, linkClock, noteIncrementCount, lastSelectedBlock;
 
-		var startButton, bpmNumberBox, divisionsNumberBox, midiOutButton;
 		this.acceptsMouseOver_(true).background_(Color.black);
-		this.bounds = bounds;
 		dictionary = Dictionary.new();
 		holdingShift = false;
+		holding_A = false;
+		holding_Q = false;
+		clock = TempoClock;
+		linkClock = TempoClock; // LinkClock();
+		noteIncrementCount = 0;
+		lastSelectedBlock = nil;
+		MIDIClient.init();
+		midiOut = MIDIOut(0);
+		players = 12.collect{ arg midiNote;  RealTimeEventStreamPlayer(midiNote, midiOut) };
 
-		//MIDI SETUP
-		MIDIClient.init(0,1);
-		midiOut =  MIDIOut(0, MIDIClient.destinations[1].uid);
-
-		//REALTIME-PLAYER SETUP
-		player = RealTimeEventStreamPlayer();
-		//player.synthDef = \test_synth;
-		player.midiOut = midiOut; //uncomment this line for MIDI OUTPUT on device 1 channel 1 instead of \testSynth
+		view.enabled = true;
 
 		//PRECESS SETUP
-		precess = Precess(this, Rect(0, 20, bounds.width,bounds.width), [2,4,8,16,24,64], player);
-		precess.initialiseWithFirstQuarterNote;
-		precess.insertNoteCallback = { arg block;
-			player.insertNote(block.noteEvent[\time], block.noteEvent[\sustain]);
-		};
-		precess.deleteNoteCallback = { arg block;
-			player.deleteNote(block.noteEvent[\time], block.noteEvent[\sustain]);
-		};
-		precess.divisionsChangedCallback =  { arg divisions;
-			//set new list
+		precess = Precess(this, Rect(0, 20, this.bounds.width, this.bounds.width), [2,4,8,16,24,64])
+
+		.noteClickCallback_({ arg block;
+
+			"note callback".postln;
+			lastSelectedBlock = block;
+
+			case
+			{ holding_A } {
+
+				if( block.isOn.not, {
+					//shortcut A -> all insert all blocks in disc
+					block.disc.blocks.do({ arg discBlock;
+						discBlock.isOn = true;
+						currentPlayer.insertNote(discBlock.noteEvent[\time], discBlock.noteEvent[\sustain]);
+					});
+				},{
+					//shortcut A -> remove all blocks in disc
+					block.disc.blocks.do({ arg discBlock;
+						discBlock.isOn = false;
+						currentPlayer.deleteNote(discBlock.noteEvent[\time], discBlock.noteEvent[\sustain]);
+					});
+				});
+			}
+			{ holding_Q } {
+				//shortcut Q -> insert notes incrementally from this note
+				var currentBlock = block;
+				var counter = noteIncrementCount;
+
+				if( block != lastSelectedBlock, {
+					noteIncrementCount = 0;
+					counter = noteIncrementCount;
+				});
+
+				while { counter > 0} {
+					currentBlock = currentBlock.nextBlock;
+					counter = counter - 1;
+				};
+
+				if ( currentBlock.isOn.not, {
+					currentBlock.isOn = true;
+					currentPlayer.insertNote(currentBlock.noteEvent[\time], currentBlock.noteEvent[\sustain]);
+				});
+
+				noteIncrementCount = noteIncrementCount + 1;
+			}
+			{ holding_A.not and: { holding_Q.not } } {
+
+				if( block.isOn.not, {
+					block.isOn = true;
+					currentPlayer.insertNote(block.noteEvent[\time], block.noteEvent[\sustain]);
+				},{
+					block.isOn = false;
+					currentPlayer.deleteNote(block.noteEvent[\time], block.noteEvent[\sustain]);
+				});
+			};
+
+			this.saveTemporarySnapshot;
+		})
+		.noteDrawCallback_({ arg block;
+			if (block.isOn.not, {
+				block.isOn = true;
+				currentPlayer.insertNote(block.noteEvent[\time], block.noteEvent[\sustain]);
+			});
+		})
+		.noteRightDragCallback_({ arg block, value;
+			value.round (0.1).postln;
+		})
+		.noteLeftDragCallback_({ arg block, value;
+			block.disc.blocks.do({ arg discBlock;
+				discBlock.isOn = value.coin.postln;
+				//currentPlayer.insertNote(discBlock.noteEvent[\time], discBlock.noteEvent[\sustain]);
+			});
+			precess.userView.refresh;
+		})
+		.divisionsChangedCallback_({ arg divisions;
 			var stringDivisions = this.parseArrayToString(divisions);
 			divisionsNumberBox.textField.value = stringDivisions;
-		};
+		});
 
 		//UI
-		startButton = PrecessButton(this, Rect(20, 20, 80, 24));
+		startButton = PrecessButton(this, Rect(20, 20, 78, 24));
 		startButton.button.states_([["START", Color.white, Color.clear],["STOP", Color.white, Color.clear]]);
 		startButton.button.action_({ arg button;
-			if (button.value == 1, { precess.start; }, { precess.stop });
+			if( button.value == 1, {
+				clock.stop;
+				if( linkButton.button.value == 1, { clock = linkClock}, { clock = TempoClock()} );
+				clock.tempo_(bpmNumberBox.numberBox.value / 60 );
+				players.do{ arg player;
+					player.clock = clock;
+					player.start
+				};
+				precess.clock = clock;
+				precess.start;
+			}, {
+				players.do{ arg player; player.stop; };
+				precess.stop;
+				//clock.stop;
+			});
 		});
 
-		bpmNumberBox = PrecessNumberBox(this, Rect(bounds.width - 100, 20, 80, 24));
-		bpmNumberBox.numberBox.action_({ arg numberBox;
-			TempoClock.tempo_(numberBox.value/60);
+		loadButton = PrecessButton(this, Rect(97, 20, 25, 24));
+		loadButton.button.states_([["L", Color.white, Color.clear]]);
+		loadButton.button.action_({ arg button;
+			"LOAD".postln;
 		});
 
-		divisionsNumberBox = PrecessTextField(this, Rect(20, bounds.width - 44, 120, 24));
+		saveButton = PrecessButton(this, Rect(121, 20, 25, 24));
+		saveButton.button.states_([["S", Color.white, Color.clear]]);
+		saveButton.button.action_({ arg button;
+			"SAVE".postln;
+		});
+
+		PrecessPopUpMenu(this,  Rect(this.bounds.width - 146, 20, 126, 24))
+		.popUpMenu.items_(MIDIClient.destinations.collect({arg endpoint; endpoint.device + " - " + endpoint.name}))
+		.action_({arg menu;
+			var client = MIDIClient.destinations.at(menu.value);
+			midiOut = MIDIOut.newByName(client.device, client.name);
+			players.do({arg player; player.midiOut = midiOut});
+		});
+
+		divisionsNumberBox = PrecessTextField(this, Rect(20, this.bounds.width - 44, 126, 24));
 		divisionsNumberBox.textField.action_({ arg textField;
 			var newList, parsed = "";
 
@@ -73,38 +171,85 @@ PrecessGUI : Window {
 			if( newList.notNil, {
 				precess.divisions =  newList.asArray;
 				precess.setup(precess.bounds);
-				precess.userView.refresh;
+				precess.clearBlocks;
+				players[activeChannel].clearAll;
+				players[activeChannel].reschedule;
 			});
 		});
 
-		midiOutButton = PrecessButton(this, Rect(bounds.width - 100, bounds.width - 44, 80, 24));
-		midiOutButton.button.states_([["MIDI", Color.white, Color.clear],["MIDI", Color.white, Color.clear]]);
-		midiOutButton.button.action_({ arg button;
-			// if (button.value == 1, { precess.start; }, { precess.stop });
+		linkButton = PrecessButton(this, Rect(this.bounds.width - 146, this.bounds.width - 44, 49, 24));
+		linkButton.button.states_([["LINK", Color.white, Color.clear],["LINK", Color.black, Color.white]])
+		.action_({ arg button;
+			if( button.value == 1, {
+				"link is ON".postln;
+			},{
+				"link is OFF".postln;
+			});
+		});
+
+		bpmNumberBox = PrecessNumberBox(this, Rect(this.bounds.width - 98, this.bounds.width - 44, 78, 24));
+		bpmNumberBox.numberBox.action_({ arg numberBox;
+			var tempo = numberBox.value/60;
+			clock.tempo_(tempo);
+			players.do{ arg player; player.clock.tempo_(tempo)};
 		});
 
 		activeChannels = List();
 		channels = 12.collect({ arg idx;
 			var size = 30;
-			var containerWidth = (bounds.width - (20 * 2));
+			var containerWidth = (this.bounds.width - (20 * 2));
 			var leftPadding =  (containerWidth - (size * 12)) / 11;
 			var channel = idx+1;
 
-			PrecessButton(this, Rect(20 + (( size + leftPadding) * idx), bounds.width, size, size))
+			PrecessButton(this, Rect(20 + (( size + leftPadding) * idx), this.bounds.width, size, size))
 			.button.states_([[channel.asString, Color.white, Color.clear],[channel.asString, Color.black, Color.white]])
 			.action_({ arg button;
 
-				var others = channels.copy;
-				others.removeAt(idx);
-				others.do({ arg other;
-					other.value_(0);
-					activeChannels.remove(other);
-				});
+				dictionary.postln;
 
-				if( activeChannels.includes(channel), {
-					button.value = 1;
-				}, {
-					activeChannels.add(channel);
+				activeChannels.clear;
+				channels.do{ arg channel; channel.value_(0) };
+				activeChannels.add(idx);
+				button.value = 1;
+				activeChannel = idx;
+
+				precess.clearBlocks;
+				currentPlayer = players[idx];
+
+				if (dictionary[activeChannels].isNil, {
+					var dict =  Dictionary();
+					dict.add(\presets -> Array.fill(13, { nil })); //last one is temp placeholder
+					dict.add(\active -> 12); //set active to temp placeholder
+					dict.add(\lastActive -> 12); //set active to temp placeholder
+					dictionary[activeChannels.copy] = dict;
+
+					//buttons states
+					presets.do({arg button; button.value = 0 });
+				},{
+					var activePreset, lastActivePreset;
+					activePreset = dictionary[activeChannels][\active];
+					lastActivePreset = dictionary[activeChannels][\lastActive];
+
+					presets.do({ arg preset, presetIdx;
+
+						if( dictionary[activeChannels][\presets][presetIdx].isNil, { preset.value = 0 }, { preset.value = 1 });
+
+						if( activePreset == 12, {
+							//we are in temp space -> display last active and load current active to discs
+							if( presetIdx == lastActivePreset, {preset.value = 2});
+							//set the discs if not nil
+							if (dictionary[activeChannels][\presets][activePreset].notNil, {
+								precess.setDiscs = dictionary[activeChannels][\presets][activePreset][\discs];
+							});
+						},{
+							//we are in saved space -> display active and load current active to discs
+							if( presetIdx == activePreset, {preset.value = 3});
+							//set the discs if not nil
+							if (dictionary[activeChannels][\presets][activePreset].notNil, {
+								precess.setDiscs = dictionary[activeChannels][\presets][activePreset][\discs];
+							});
+						});
+					});
 				});
 			})
 		});
@@ -113,44 +258,49 @@ PrecessGUI : Window {
 
 		presets = 12.collect({ arg idx;
 			var size = 30;
-			var containerWidth = (bounds.width - (20 * 2));
+			var containerWidth = (this.bounds.width - (20 * 2));
 			var leftPadding =  (containerWidth - (size * 12)) / 11;
 			var channel = idx+1;
 
-			PrecessButton(this, Rect(20 + (( size + leftPadding) * idx), bounds.width + 50, size, size))
-			.button.states_([["", Color.white, Color.clear],["●", Color.white, Color.clear], ["●", Color.black, Color.white] ])
+			PrecessButton(this, Rect(20 + (( size + leftPadding) * idx), this.bounds.width + 50, size, size))
+			.button.states_([["", Color.white, Color.clear],["●", Color.white, Color.clear],["○", Color.black, Color.white],["●", Color.black, Color.white]])
 			.action_({ arg button;
 
 				if( holdingShift, {
+
 					var snapshot = Dictionary();
 					snapshot.add(\discs -> precess.discsCompact);
-					snapshot.add(\sequence -> player.sequence.deepCopy);
+					snapshot.add(\sequence -> currentPlayer.sequence.deepCopy);
 
-					if(dictionary[activeChannels].isNil, {
-						dictionary[activeChannels] = Array.fill(12, { nil });
+					//buttons state
+					presets.do({arg button, buttonIdx;
+						if( dictionary[activeChannels][\presets][buttonIdx].notNil, { button.value = 1 }, { button.value = 0 });
 					});
+					button.value = 3;
 
 					//set a pattern
-					dictionary[activeChannels][idx] = snapshot;
-					button.value = 1;
+					dictionary[activeChannels][\presets][idx] = snapshot;
+					dictionary[activeChannels][\active] = idx;
 				}, {
 
 					//call a pattern
 					if( dictionary[activeChannels].notNil, {
 
-						if( dictionary[activeChannels][idx].notNil, {
+						if( dictionary[activeChannels][\presets][idx].notNil, {
 
-							var preset = dictionary[activeChannels][idx];
+							var preset = dictionary[activeChannels][\presets][idx];
 
 							precess.setDiscs = preset[\discs];
-							player.switchToSequence(preset[\sequence]);
+							currentPlayer.switchToSequence(preset[\sequence]);
+							dictionary[activeChannels][\active] = idx;
+							dictionary[activeChannels][\lastActive] = idx;
 
 							//set state of other buttons
 							presets.do({arg otherButton, idx;
-								if( dictionary[activeChannels][idx].notNil, { otherButton.value = 1 }, { otherButton.value = 0 });
+								if( dictionary[activeChannels][\presets][idx].notNil, { otherButton.value = 1 }, { otherButton.value = 0 });
 							});
 
-							button.value = 2;
+							button.value = 3;
 						},{
 							button.value = 0;
 						});
@@ -159,6 +309,21 @@ PrecessGUI : Window {
 					});
 				});
 			});
+		});
+
+		view.keyDownAction_({ arg view, char, modifiers, unicode, keycode, key;
+			unicode.postln;
+			view.enabled.postln;
+
+			if( unicode == 97, { holding_A = true });
+			if( unicode == 113, { holding_Q = true });
+			if( unicode == 119, { precess.isDrawing = true });
+		});
+
+		view.keyUpAction_({ arg view, char, modifiers, unicode, keycode, key;
+			if( unicode == 97, { holding_A = false });
+			if( unicode == 113, { holding_Q = false });
+			if( unicode == 119, { precess.isDrawing = false });
 		});
 
 		view.keyModifiersChangedAction_({ arg view,modifiers;
@@ -177,5 +342,22 @@ PrecessGUI : Window {
 
 		^parsed;
 	}
+
+	saveTemporarySnapshot {
+		var snapshot = Dictionary();
+
+		//if we are not yet in temporary storage
+		if( dictionary[activeChannels][\active] != 12, {
+			dictionary[activeChannels][\lastActive] = dictionary[activeChannels][\active];
+			dictionary[activeChannels][\active] = 12;
+			presets[dictionary[activeChannels][\lastActive]].value = 2;
+		});
+
+		//save the temporary snapshot
+		snapshot.add(\discs -> precess.discsCompact);
+		snapshot.add(\sequence -> currentPlayer.sequence.deepCopy);
+		dictionary[activeChannels][\presets][12] = snapshot; //temporary storage
+	}
 }
 
+// Mouse
